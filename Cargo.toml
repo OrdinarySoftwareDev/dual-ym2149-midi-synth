@@ -16,10 +16,10 @@ defmt-rtt = "1"
 usbd-serial = "0.2.2"
 usb-device = "0.3.2"
 
-ym2149-core = { path = "../ym2149-core/"}
+ym2149-core = "0.1"
 
 #rp2040-hal = { version="0.12", features=["rt", "critical-section-impl"] }
-rp2040-hal = { path = "../rp-hal/rp2040-hal"}
+rp2040-hal = "0.12"
 rp2040-boot2 = "0.3"
 panic-halt = "1.0.0"
 frunk = { version = "0.4.2", default-features = false }

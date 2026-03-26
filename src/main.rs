@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::sync::Exclusive;
-
 // Bootloader
 use rp2040_boot2;
 #[link_section = ".boot2"]
@@ -16,29 +14,33 @@ const WRITE_MODE: u32 = 0x40000; // 18 (BDIR) high, 19 (BC1) low
 use defmt_rtt as _;
 use panic_halt as _;
 
-use rp2040_hal::{self as hal, Spi, gpio::{AnyPin, FunctionSpi, PinGroup, ReadPinHList, WritePinHList}};
-use rp2040_hal::fugit::RateExtU32;
-use embedded_hal::{digital::{OutputPin, PinState::{self, *}}};
-
-use mipidsi::{Builder, interface::SpiInterface};
-use mipidsi::{models::ILI9341Rgb565};           // Provides the builder for Display
-use embedded_graphics::{prelude::*, pixelcolor::Rgb666};
-
-use hal::{
-    clocks::{init_clocks_and_plls},
-    Clock,
-    pac,
-    sio::Sio,
-    watchdog::Watchdog,
+use embedded_hal::digital::{
+    OutputPin,
+    PinState::{self, *},
 };
+use rp2040_hal::fugit::RateExtU32;
+use rp2040_hal::{
+    self as hal,
+    gpio::{AnyPin, FunctionSpi, PinGroup},
+    Spi,
+};
+
+use embedded_graphics::{pixelcolor::Rgb666, prelude::*};
+use mipidsi::models::ILI9341Rgb565; // Provides the builder for Display
+use mipidsi::{interface::SpiInterface, Builder};
+
+use hal::{clocks::init_clocks_and_plls, pac, sio::Sio, watchdog::Watchdog, Clock};
 
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_serial::SerialPort;
 
 // YM2149 driver
-use ym2149_core::{command::{Command, CommandOutput}, chip::YM2149};
+use ym2149_core::{
+    chip::YM2149,
+    command::{Command, CommandOutput},
+};
 
-use frunk::{HCons};
+use frunk::HCons;
 
 #[repr(u8)]
 pub enum Mode {
@@ -69,58 +71,6 @@ impl Mode {
     /// Returns an appropriate array of `PinState`s.
     fn pin_states(self) -> (PinState, PinState, PinState) {
         Self::STATES[self as usize]
-    }
-}
-
-pub struct DualYMDataBus<H, T>
-where
-    HCons<H, T>: ReadPinHList + WritePinHList,
-    H: AnyPin,
-{
-    data_bus: PinGroup<HCons<H, T>>
-}
-
-
-
-impl<H, T> DualYMDataBus<H, T>
-where
-    HCons<H, T>: ReadPinHList + WritePinHList,
-    H: AnyPin,
-{
-    pub fn new(data_bus: PinGroup<HCons<H, T>>) -> Self {
-        Self {
-            data_bus,
-        }
-    }
-
-    /// Write to the data bus along with bus control
-    // Hardcoded pins!
-    fn write_command(&mut self, command: Command) {
-        let (mode_shift, true_register) = if command.register > 0xF {
-            (2, command.register - 0xF)
-        } else {
-            (0, command.register)
-        };
-
-        // write address & set inactive
-        self.data_bus.set_u32(
-            (ADDRESS_MODE << mode_shift) + ((true_register as u32) << 2) // Address mode on correct chip & write register on pins 2-9.
-        );
-
-        // write value & set inactive
-        self.data_bus.set_u32(
-            (WRITE_MODE << mode_shift) + ((command.value as u32) << 2) // Write mode on correct chip & write value on pins 2-9.
-        );
-    }
-}
-
-impl<H, T> CommandOutput for DualYMDataBus<H, T>
-where
-    HCons<H, T>: ReadPinHList + WritePinHList,
-    H: AnyPin,
-{
-    fn execute(&mut self, command: Command) {
-        self.write_command(command);
     }
 }
 
@@ -162,7 +112,7 @@ fn main() -> ! {
         pac.USBCTRL_DPRAM,
         clocks.usb_clock,
         true,
-        &mut pac.RESETS
+        &mut pac.RESETS,
     ));
 
     let mut serial = SerialPort::new(&usb_bus);
@@ -195,16 +145,6 @@ fn main() -> ! {
         .add_pin(pins.gpio20.into_push_pull_output()) // BDIR B
         .add_pin(pins.gpio21.into_push_pull_output()); // BC1 B
 
-    let data_bus = DualYMDataBus::new(
-        ym_pins,
-    );
-
-    // Build the chip by passing:
-    let mut dual_ym = YM2149::new(
-        data_bus,
-        master_clock_freq
-    ).expect("");
-
     // TFT ILI9341
 
     let sck = pins.gpio10.into_function::<FunctionSpi>();
@@ -215,8 +155,7 @@ fn main() -> ! {
     let disp_dc = pins.gpio15.into_push_pull_output();
     let disp_cs = pins.gpio13.into_push_pull_output();
 
-    let spi = Spi::new(pac.SPI1, (mosi, miso, sck))
-    .init(
+    let spi = Spi::<_, _, _, 8>::new(pac.SPI1, (mosi, miso, sck)).init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
         16_u32.MHz(),
@@ -226,7 +165,7 @@ fn main() -> ! {
     use embedded_hal_bus::spi::ExclusiveDevice;
     let spi_dev = ExclusiveDevice::new_no_delay(spi, NoCs).unwrap();
 
-    let buffer = [0_u8; 1024];
+    let mut buffer = [0_u8; 1024];
     //use display_interface_spi::SPIInterface;
 
     let iface = SpiInterface::new(spi_dev, disp_dc, &mut buffer);
@@ -237,7 +176,7 @@ fn main() -> ! {
             let mut buf = [0u8; 2];
             if let Ok(_) = serial.read(&mut buf) {
                 let (register, value) = (buf[0], buf[1]);
-                dual_ym.command(register, value);
+                // dual_ym.command(register, value);
             }
         }
     }
