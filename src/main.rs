@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::sync::Exclusive;
-
 // Bootloader
 use rp2040_boot2;
 #[link_section = ".boot2"]
@@ -21,8 +19,8 @@ use rp2040_hal::fugit::RateExtU32;
 use embedded_hal::{digital::{OutputPin, PinState::{self, *}}};
 
 use mipidsi::{Builder, interface::SpiInterface};
-use mipidsi::{models::ILI9341Rgb565};           // Provides the builder for Display
-use embedded_graphics::{prelude::*, pixelcolor::Rgb666};
+use mipidsi::{models::ILI9341Rgb565, options::ColorOrder};           // Provides the builder for Display
+use embedded_graphics::{prelude::WebColors, pixelcolor::Rgb565};
 
 use hal::{
     clocks::{init_clocks_and_plls},
@@ -107,10 +105,14 @@ where
             (ADDRESS_MODE << mode_shift) + ((true_register as u32) << 2) // Address mode on correct chip & write register on pins 2-9.
         );
 
+        self.data_bus.set_u32(0);
+
         // write value & set inactive
         self.data_bus.set_u32(
             (WRITE_MODE << mode_shift) + ((command.value as u32) << 2) // Write mode on correct chip & write value on pins 2-9.
         );
+
+        self.data_bus.set_u32(0);
     }
 }
 
@@ -146,7 +148,10 @@ fn main() -> ! {
     .unwrap();
 
     let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+    let mut delay = DelayCompat(cortex_m::delay::Delay::new(
+        core.SYST,
+        clocks.system_clock.freq().to_Hz(),
+    ));
 
     let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
@@ -211,11 +216,11 @@ fn main() -> ! {
     let mosi = pins.gpio11.into_function::<FunctionSpi>();
     let miso = pins.gpio12.into_function::<FunctionSpi>();
 
-    //let disp_reset = pins.gpio14.into_push_pull_output();
+    let disp_reset = pins.gpio14.into_push_pull_output();
     let disp_dc = pins.gpio15.into_push_pull_output();
     let disp_cs = pins.gpio13.into_push_pull_output();
 
-    let spi = Spi::new(pac.SPI1, (mosi, miso, sck))
+    let spi = Spi::<_,_,_,8>::new(pac.SPI1, (mosi, miso, sck))
     .init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
@@ -226,12 +231,18 @@ fn main() -> ! {
     use embedded_hal_bus::spi::ExclusiveDevice;
     let spi_dev = ExclusiveDevice::new_no_delay(spi, NoCs).unwrap();
 
-    let buffer = [0_u8; 1024];
+    let mut buffer = [0_u8; 1024];
     //use display_interface_spi::SPIInterface;
 
     let iface = SpiInterface::new(spi_dev, disp_dc, &mut buffer);
-    let mut display = Builder::new(ILI9341Rgb565, iface);
+    let mut display = Builder::new(ILI9341Rgb565, iface)
+        .reset_pin(disp_reset)
+        .color_order(ColorOrder::Bgr)
+        .init(&mut delay)
+        .unwrap();
 
+    // Set the display all red
+    display.set_pixels(1, 1, 100, 100, [Rgb565::new(0xFF, 0, 0); 16384]);
     loop {
         if device.poll(&mut [&mut serial]) {
             let mut buf = [0u8; 2];
@@ -261,4 +272,21 @@ impl embedded_hal::digital::OutputPin for NoCs {
 
 impl embedded_hal::digital::ErrorType for NoCs {
     type Error = core::convert::Infallible;
+}
+/// Wrapper around `Delay` to implement the embedded-hal 1.0 delay.
+///
+/// This can be removed when a new version of the `cortex_m` crate is released.
+struct DelayCompat(cortex_m::delay::Delay);
+
+impl embedded_hal::delay::DelayNs for DelayCompat {
+    fn delay_ns(&mut self, mut ns: u32) {
+        while ns > 1000 {
+            self.0.delay_us(1);
+            ns = ns.saturating_sub(1000);
+        }
+    }
+
+    fn delay_us(&mut self, us: u32) {
+        self.0.delay_us(us);
+    }
 }
