@@ -30,6 +30,7 @@ embedded-graphics = "0.8.2"
 mipidsi = "0.10.0"
 display-interface-spi = "0.5.0"
 embedded-hal-bus = "0.3.0"
+usbd-midi = "0.5.1"
 
 #frunk = "0.4.4"
 

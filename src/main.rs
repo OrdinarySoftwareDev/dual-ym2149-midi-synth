@@ -31,12 +31,20 @@ use hal::{
 };
 
 use usb_device::{class_prelude::*, prelude::*};
-use usbd_serial::SerialPort;
+
+use usbd_midi::{
+    message::{Message, Channel, Note},
+    UsbMidiClass,
+    UsbMidiPacketReader,
+};
+
+use frunk::{HCons};
 
 // YM2149 driver
 use ym2149_core::{command::{Command, CommandOutput}, chip::YM2149};
 
-use frunk::{HCons};
+// MIDI command interpreter
+mod interpreter;
 
 #[repr(u8)]
 pub enum Mode {
@@ -75,7 +83,8 @@ where
     HCons<H, T>: ReadPinHList + WritePinHList,
     H: AnyPin,
 {
-    data_bus: PinGroup<HCons<H, T>>
+    data_bus: PinGroup<HCons<H, T>>,
+    b_active: bool
 }
 
 
@@ -88,6 +97,7 @@ where
     pub fn new(data_bus: PinGroup<HCons<H, T>>) -> Self {
         Self {
             data_bus,
+            b_active: false
         }
     }
 
@@ -128,6 +138,7 @@ where
 
 #[hal::entry]
 fn main() -> ! {
+    // init stuff
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
@@ -160,6 +171,8 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
+    // actual code
+
     let mut status_led = pins.gpio25.into_push_pull_output();
 
     let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
@@ -170,14 +183,16 @@ fn main() -> ! {
         &mut pac.RESETS
     ));
 
-    let mut serial = SerialPort::new(&usb_bus);
+    let mut midi = UsbMidiClass::new(&usb_bus, 1, 0).unwrap();
 
     let mut device = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x2E8A, 0x000A))
+        .device_class(0)
+        .device_sub_class(0)
         .strings(&[StringDescriptors::default()
             .manufacturer("vw.dvw")
-            .product("Dual YM2149 USB-MIDI Synthesizer")])
+            .product("Dual YM2149 USB-MIDI Synthesizer")
+            .serial_number("DZ-0001")])
         .unwrap()
-        .device_class(2)
         .build();
 
     // Frequency (in Hz, u32) of the clock the chip is connected to (Pin 22 on the YM2149)
@@ -210,7 +225,7 @@ fn main() -> ! {
         master_clock_freq
     ).expect("");
 
-    // TFT ILI9341
+    /* TFT ILI9341
 
     let sck = pins.gpio10.into_function::<FunctionSpi>();
     let mosi = pins.gpio11.into_function::<FunctionSpi>();
@@ -242,13 +257,20 @@ fn main() -> ! {
         .unwrap();
 
     // Set the display all red
-    display.set_pixels(1, 1, 100, 100, [Rgb565::new(0xFF, 0, 0); 16384]);
+    display.set_pixels(1, 1, 100, 100, [Rgb565::new(0xFF, 0, 0); 16384]);*/
     loop {
-        if device.poll(&mut [&mut serial]) {
-            let mut buf = [0u8; 2];
-            if let Ok(_) = serial.read(&mut buf) {
-                let (register, value) = (buf[0], buf[1]);
-                dual_ym.command(register, value);
+        if !device.poll(&mut [&mut midi]) {
+            continue;
+        }
+
+        let mut buffer = [0_u8; 64];
+
+        if let Ok(size) = midi.read(&mut buffer) {
+            let packet_reader = UsbMidiPacketReader::new(&buffer, size);
+            for packet in packet_reader.into_iter() {
+                if let Ok(packet) = packet {
+                    let _ = interpreter::process(packet, &mut dual_ym);
+                }
             }
         }
     }
