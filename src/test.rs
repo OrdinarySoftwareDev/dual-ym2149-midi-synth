@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(lazy_type_alias)]
 
-use cortex_m::{asm::delay, delay::Delay};
+use cortex_m::asm::delay;
 // Bootloader
 use rp2040_boot2;
 #[link_section = ".boot2"]
@@ -12,23 +12,13 @@ pub static BOOT_LOADER: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 const ADDRESS_MODE: u32 = 0xC000; // 15 (BDIR) & 14 (BC1) high
 const WRITE_MODE: u32 = 0x8000; // 15 (BDIR) high, 14 (BC1) low
 
-const T_AH: u32 = 100; // Address hold (> 80ns)
-const T_AS: u32 = 350; // Address setup (> 300ns)
-
-const T_RW: u32 = 1_000; // Reset pulse width (> 500ns)
-const T_RB: u32 = 1_000; // Reset bus control delay time (> 100ns)
-
-const T_DS: u32 = 5; // Data setup (> 0ns)
-const T_DW: u32 = 400; // Write signal (valid range 300ns - 10us)
-const T_DH: u32 = 100; // Data hold (> 80ns)
-
 // Deps
 use defmt_rtt as _;
 use panic_halt as _;
 
-use rp2040_hal::{self as hal, Spi, Timer, gpio::{AnyPin, FunctionSpi, PinGroup, PinState, ReadPinHList, WritePinHList}};
+use rp2040_hal::{self as hal, Spi, gpio::{AnyPin, FunctionSpi, PinState, PinGroup, ReadPinHList, WritePinHList}};
 use rp2040_hal::fugit::RateExtU32;
-use embedded_hal::{delay::DelayNs, digital::OutputPin};
+use embedded_hal::digital::OutputPin;
 use embedded_hal_bus::spi::ExclusiveDevice;
 
 use mipidsi::{Builder, interface::SpiInterface};
@@ -46,15 +36,15 @@ use hal::{
 use usb_device::{class_prelude::*, prelude::*};
 
 use usbd_midi::{
-    message::{Message, Channel},
+    message::{Message, Channel, Note},
     UsbMidiClass,
     UsbMidiPacketReader,
 };
 
-use frunk::{HCons, coproduct::CoproductSubsetter};
+use frunk::{HCons};
 
 // YM2149 driver
-use ym2149_core::{audio::Note, chip::YM2149, command::{Command, CommandOutput}, io::{IoPortMixerSettings, IoPortMode}};
+use ym2149_core::{chip::YM2149, command::{Command, CommandOutput}, io::{IoPortMode, IoPortMixerSettings}};
 
 // MIDI command interpreter
 mod interpreter;
@@ -66,7 +56,6 @@ where
 {
     pin_group: PinGroup<HCons<H, T>>,
     b_active: bool,
-    timer: Timer,
 }
 
 
@@ -76,11 +65,10 @@ where
     HCons<H, T>: ReadPinHList + WritePinHList,
     H: AnyPin,
 {
-    pub fn new(pin_group: PinGroup<HCons<H, T>>, timer: Timer) -> Self {
+    pub fn new(pin_group: PinGroup<HCons<H, T>>) -> Self {
         Self {
             pin_group,
-            b_active: false,
-            timer
+            b_active: false
         }
     }
 }
@@ -92,56 +80,20 @@ where
 {
     fn execute(&mut self, command: Command) {
         let mode_shift = (self.b_active as u8) * 2;
-
-        /*
-         *  ADDRESS
-         */
+        // write address & set inactive
         self.pin_group.set_u32(
-            ADDRESS_MODE << mode_shift  // address mode
+            (ADDRESS_MODE << mode_shift) + ((command.register as u32) << 2) // Address mode on correct chip & write register on pins 2-9.
         );
 
-        self.timer.delay_ns(T_AH);
+        delay(1_000_000);
 
+        // write value & set inactive
         self.pin_group.set_u32(
-            (ADDRESS_MODE << mode_shift) + ((command.register as u32) << 2)  // address mode & address data
+            (WRITE_MODE << mode_shift) + ((command.value as u32) << 2) // Write mode on correct chip & write value on pins 2-9.
         );
 
-        self.timer.delay_ns(T_AS);
+        delay(1_000_000);
 
-        self.pin_group.set_u32(
-            (command.register as u32) << 2  // inactive mode & address data
-        );
-
-        self.timer.delay_ns(T_AH);
-
-        self.pin_group.set_u32(0); // inactive
-
-        self.timer.delay_ns(500);
-
-        /*
-         *  DATA
-         */
-        self.pin_group.set_u32(
-            (command.value as u32) << 2 // data
-        );
-
-        self.timer.delay_ns(T_DS);
-
-        self.pin_group.set_u32(
-            (WRITE_MODE << mode_shift) + ((command.value as u32) << 2) // write mode & data
-        );
-
-        self.timer.delay_ns(T_DW);
-
-        self.pin_group.set_u32(
-            (command.value as u32) << 2 // data
-        );
-
-        self.timer.delay_ns(T_DH);
-
-        self.pin_group.set_u32(0); // inactive
-
-        self.timer.delay_ns(500);
     }
 }
 
@@ -168,7 +120,7 @@ fn main() -> ! {
     .unwrap();
 
     let mut timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-    let mut delay = Delay::new(
+    let mut delay = cortex_m::delay::Delay::new(
         core.SYST,
         clocks.system_clock.freq().to_Hz(),
     );
@@ -207,7 +159,7 @@ fn main() -> ! {
     // Frequency (in Hz, u32) of the clock the chip is connected to (Pin 22 on the YM2149)
     let master_clock_freq: u32 = 3_579_545;
 
-    let mut status_led = pins.gpio25.into_push_pull_output_in_state(PinState::High);
+    //let mut status_led = pins.gpio25.into_push_pull_output_in_state(PinState::High);
 
 
     // Initialize a PinGroup
@@ -224,48 +176,32 @@ fn main() -> ! {
         .add_pin(pins.gpio14.into_push_pull_output()) // BDIR A
         .add_pin(pins.gpio15.into_push_pull_output()) // BC1 A
         .add_pin(pins.gpio16.into_push_pull_output()) // BDIR B
-        .add_pin(pins.gpio17.into_push_pull_output()); // BC1 B
+        .add_pin(pins.gpio17.into_push_pull_output()) // BC1 B
 
-    ym_pins.set_u32(0);
+        .add_pin(pins.gpio25.into_push_pull_output());
 
-    let mut reset = pins.gpio21.into_push_pull_output();
-    reset.set_high();
-    timer.delay_ns(T_RW);
-
-    reset.set_low();
-    timer.delay_ns(T_RW);
-
-    reset.set_high();
-    timer.delay_ns(T_RB);
-
-
-    let mut data_bus = DataBusController::new(
-        ym_pins,
-        timer
-    );
-
-
+    //let mut data_bus = DataBusController::new(
+    //    ym_pins,
+    //);
 
     //data_bus.b_active = true;
 
     // Build the chip by passing:
-    let mut dual_ym = YM2149::new(
-        data_bus,
-        master_clock_freq
-    ).expect("");
+    //let mut dual_ym = YM2149::new(
+    //    data_bus,
+    //    master_clock_freq
+    //).expect("");
 
 
-    let chord: [Note; 6] = [
-        Note::new(ym2149_core::audio::BaseNote::C, 3, None).expect("Error while creating note!"),
-        Note::new(ym2149_core::audio::BaseNote::G, 3, None).expect("Error while creating note!"),
-        Note::new(ym2149_core::audio::BaseNote::C, 4, None).expect("Error while creating note!"),
-        Note::new(ym2149_core::audio::BaseNote::E, 4, None).expect("Error while creating note!"),
-        Note::new(ym2149_core::audio::BaseNote::G, 4, None).expect("Error while creating note!"),
-        Note::new(ym2149_core::audio::BaseNote::B, 4, None).expect("Error while creating note!"),
-    ];
+    let mut reset = pins.gpio21.into_push_pull_output();
+
+    reset.set_high();
 
     loop {
-        dual_ym.setup_io_and_mixer(IoPortMixerSettings{
+        /*dual_ym.setup_io_and_mixer(IoPortMixerSettings{
+            noise_ch_a: true,
+            noise_ch_b: true,
+            noise_ch_c: true,
             tone_ch_a: true,
             tone_ch_b: true,
             tone_ch_c: true,
@@ -276,11 +212,11 @@ fn main() -> ! {
         dual_ym.level(ym2149_core::audio::AudioChannel::B, 0x0F);
         dual_ym.level(ym2149_core::audio::AudioChannel::C, 0x0F);
 
-        for i in 0..3 {
-            dual_ym.play_note(ym2149_core::audio::AudioChannel::A, &chord[i + (dual_ym.command_output.b_active as usize * 3)]).expect("Failed to play note!");
-        }
+        dual_ym.tone_hz(ym2149_core::audio::AudioChannel::A, 220);
+        dual_ym.tone_hz(ym2149_core::audio::AudioChannel::B, 440);
+        dual_ym.tone_hz(ym2149_core::audio::AudioChannel::C, 880);*/
 
-        dual_ym.command_output.b_active = !dual_ym.command_output.b_active;
+        ym_pins.toggle();
 
         delay.delay_ms(1_000);
         /*if !device.poll(&mut [&mut midi]) {

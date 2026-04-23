@@ -277,12 +277,12 @@ fn main() -> ! {
         dual_ym.level(ym2149_core::audio::AudioChannel::C, 0x0F);
 
         for i in 0..3 {
-            dual_ym.play_note(ym2149_core::audio::AudioChannel::A, &chord[i + (dual_ym.command_output.b_active as usize * 3)]).expect("Failed to play note!");
+            dual_ym.play_note(ym2149_core::audio::AudioChannel::A, &chord[i]).expect("Failed to play note!");
         }
 
         dual_ym.command_output.b_active = !dual_ym.command_output.b_active;
 
-        delay.delay_ms(1_000);
+        delay.delay_ms(100);
         /*if !device.poll(&mut [&mut midi]) {
             continue;
         }
