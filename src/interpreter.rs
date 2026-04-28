@@ -11,7 +11,7 @@ use ym2149_core::{
     audio::AudioChannel,
     chip::YM2149,
     envelopes::{BuiltinEnvelopeShape, Envelope, EnvelopeFrequency},
-    errors::Error,
+    errors::Error, register::Register,
 };
 
 
@@ -27,18 +27,21 @@ const ENVELOPE_SHAPES: [BuiltinEnvelopeShape; 5] = [
 
 // So MIDI can send only 7 bits at a time. To control the envelope generator, we need 20 bits total.
 // Hence, you need a very weird way of gluing them together from 2 separate messages.
-// Thanks, 1983 MIDI protocol!
+// Thanks, MIDI protocol from 1983!
 //
-// xxCTLHR RRRR   RRRFFFF FFFF
+// SxCTLHR RRRR   RRRFFFF FFFF
 // ||||||| ||||   ||||||| ||||
 //   MSB    ch      LSB    ch
 //
-// x - unused
-// C, T, L, H - CONT, ATT, ALT, HOLD
-// R - rough adjustment
-// F - fine adjustment
+// where:
+//
+//  S: chip select
+//  x: unused
+//  C, T, L, H: CONT, ATT, ALT, HOLD
+//  R: rough adjustment
+//  F: fine adjustment
 pub struct U20{
-    pub value: u32
+    pub value: u32,
 }
 
 impl U20{
@@ -85,8 +88,8 @@ where
             chip.command_output.b_active = b;
             let vel: u8 = v.into();
 
-            let note_offset: u8 = n.try_into().unwrap(); // offset from A0
-            let f: f32 = 27.5 * 2f32.powf(note_offset as f32 / 12.0);
+            let note_offset = n as u8; // offset from C0
+            let f: f32 = 16.35 * 2f32.powf(note_offset as f32 / 12.0);
 
             chip.tone_hz(channel, f as u32)?;
             chip.level(channel, vel / 8);
@@ -94,23 +97,58 @@ where
         Message::NoteOff(c, _, _) => {
             let (channel, b) = parse_channel(c)?;
             chip.command_output.b_active = b;
-
             chip.level(channel, 0);
         }
         Message::ControlChange(c, f, v) => {
             let data: u8 = v.into();
 
             match f {
+                ControlFunction::DATA_ENTRY_MSB_6 => { // noise generator frequency set
+                    // The 7-bit value shall consist of:
+                    // SxNNNNN
+                    // where:
+                    //  S: Chip select
+                    //  x: unused
+                    //  N: Noise frequency
+                    let cs = data & 0x40 >> 6 == 1;
+                    chip.command_output.b_active = cs;
+                    chip.set_noise_freq(data)?;
+                }
                 ControlFunction::CHANNEL_VOLUME_7 => {
                     let (channel, b) = parse_channel(c)?;
                     chip.command_output.b_active = b;
                     chip.level(channel, data / 8);
                 }
-                ControlFunction::GENERAL_PURPOSE_CONTROLLER_1_16 => {
+                ControlFunction::GENERAL_PURPOSE_CONTROLLER_1_16 => { // IO & mixer settings
+                    let (channel, b) = parse_channel(c)?;
+                    chip.command_output.b_active = b;
+
+
+
+                    chip.command(Register::IoPortMixerSettings, data);
+
+                    /*/ The 7-bit value shall consist of:
+                    // xxEBANT
+                    // where:
+                    //  x: unused
+                    //  E: Envelope toggle bit
+                    //  B: I/O Port B Mode
+                    //  A: I/O Port A Mode
+                    //  N: Noise generator toggle bit
+                    //  T: Tone generator toggle bit
+                    let e = data & 0b10000; // E
+
+                    let reg_value = (data & 0b1100) << 4    // BA......
+                                    |((data & 0b0010) << 1  // BA...(N..)
+                                     |(data & 0b0001)       // BA...(N.T)
+                                    ) << channel * 3 as u8; // Move noise and tone bits to the correct channel
+                    chip.level(channel, e);*/
+                }
+                ControlFunction::GENERAL_PURPOSE_CONTROLLER_2_17 => {
                     buffer.read(c.into(), data.into(), true);
                     chip.set_envelope_frequency(EnvelopeFrequency::Integer((buffer.value & 0xFFFF) as u16))?;
                 }
-                ControlFunction::LSB_FOR_GENERAL_PURPOSE_CONTROLLER_1_48 => {
+                ControlFunction::LSB_FOR_GENERAL_PURPOSE_CONTROLLER_2_49 => {
                     buffer.read(c.into(), data.into(), false);
                 }
                 _ => {}

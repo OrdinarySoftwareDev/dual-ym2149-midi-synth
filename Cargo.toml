@@ -31,6 +31,7 @@ embedded-hal-bus = "0.3.0"
 usbd-midi = "0.5.1"
 xpt2046 = { path = "../xpt2046"}
 micromath = "2.1.0"
+tinybmp = "0.7.0"
 
 # cargo build/run
 [profile.dev]
